@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: poc-hashicorp-vault-application
+
+resources:
+  - ../../base
+
+images:
+  - name: level1-env-secret
+    # TODO(phase-b0): newName must be the registry address recorded in
+    # documents/environment.md by Stage A Phase A0. It is deliberately a placeholder
+    # rather than a guess — CLAUDE.md forbids hardcoding environment values.
+    newName: REGISTRY_FROM_DOCS_ENVIRONMENT_MD/level1-env-secret
+    newTag: GIT_SHA   # set by `make deploy` / the ArgoCD image updater
