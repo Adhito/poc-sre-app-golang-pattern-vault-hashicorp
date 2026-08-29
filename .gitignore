@@ -10,6 +10,10 @@ vault-init.json
 .env
 *CLAUDE.md
 
+# --- Go build output (Stage B) ---
+bin/
+*.exe
+
 # --- Local .terraform directories ---
 .terraform/
 

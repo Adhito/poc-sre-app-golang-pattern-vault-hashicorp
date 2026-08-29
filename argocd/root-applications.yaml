@@ -1,0 +1,40 @@
+# Stage B root Application (Stage A D19).
+#
+# ############################################################################
+# DO NOT APPLY DURING STAGE A.
+#
+# This is applied at Stage B Phase B0, and only after all seven Stage A
+# verification checks pass. Applying it earlier deploys app pods before
+# Kubernetes auth exists, producing a crash-loop that reads as an application
+# bug and is actually a sequencing error.
+# ############################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root-applications
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # TODO(phase-b0): confirm this URL and ArgoCD's credentials for it. The
+    # local git remote is an SSH host alias (github.com-adhito909:Adhito/...)
+    # which ArgoCD cannot resolve — it needs either the HTTPS URL with a
+    # credential, or a plain SSH URL with a deploy key.
+    repoURL: https://github.com/Adhito/poc-sre-app-golang-pattern-vault-hashicorp.git
+    targetRevision: main
+    path: argocd/applications/applications
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
