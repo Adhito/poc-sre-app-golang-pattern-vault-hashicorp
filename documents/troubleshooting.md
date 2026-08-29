@@ -38,6 +38,37 @@ Either answer is fine; the current state — a reference to a local path that is
 not populated by anything — is the one that is not. Same question applies to
 `key-custody.md` and the three runbooks, which Stage B's docs cross-reference.
 
+### The Level 3 demo table has no name in either PRD
+
+**Phase B3.** Stage A Phase A7 step 2 says to seed "a demo table so Level 3 has
+something real to `SELECT`" and never names it. `/query` needs an identifier.
+
+**Resolution:** the table name is `DEMO_TABLE`, defaulting to `demo`, set in the
+Deployment with a TODO. Confirm it against whatever Phase A7 actually creates
+before B3 runs. The name is interpolated through `pgx.Identifier{}.Sanitize()`
+rather than concatenated raw — it comes from the environment, which is not a
+trust boundary worth assuming.
+
+`/query` also runs `SELECT current_user` independently of the demo table, so a
+wrong table name produces a clean `42P01` classified as a *database* fault
+rather than looking like a credential problem.
+
+### The lease deadline was a data race, and the race detector cannot run here
+
+**Phase B3.** The lease manager extends `ExpiresAt` on every renewal while
+`/readyz` and `/creds-info` read it. As first written these were bare struct
+fields — a genuine race, and one that would surface as nonsense TTLs on
+`/creds-info` under load long before it surfaced as a crash.
+
+**Resolution:** the mutable lease state is behind a mutex on `dbCredential`,
+reached through `lease()` and `extend()`. Fixed by construction rather than by
+testing, because `go test -race` **cannot run on the Windows workstation**: the
+race detector needs cgo, and there is no C compiler installed. `make race` runs
+it on the dev workspace, and that is where the guarantee actually gets checked.
+
+Worth remembering for Levels 1, 2 and 4 too — none of their local test runs
+prove anything about concurrency.
+
 ### Stage B's `vault-ca` ConfigMap has the same staleness hazard the Stage A store avoided
 
 **Phase B0.** Stage A's `ClusterSecretStore` reads `vault-tls` in the `vault`

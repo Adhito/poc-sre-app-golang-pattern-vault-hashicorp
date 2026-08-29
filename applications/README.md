@@ -71,7 +71,7 @@ unset rather than guessing.
 |---|---|---|---|---|
 | 1 | done | done | done | **no — Stage A pending** |
 | 2 | done | done | done | **no — Stage A pending** |
-| 3 | `go.mod` only | — | — | — |
+| 3 | done | done | done | **no — Stage A pending** |
 | 4 | `go.mod` only | — | — | — |
 
 Nothing here has run against a real Vault. Every failure injection, the audit
