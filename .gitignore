@@ -1,4 +1,16 @@
-# Local .terraform directories
+# --- vault-poc: secret material (CLAUDE.md hard rule 1 / Stage A Phase A0.10) ---
+# Must be present before any file matching it can exist.
+# NOTE: this is necessary but NOT sufficient — unseal keys live at
+# ~/.credentials/vault-poc/vault-init.json, outside the repo tree (D20),
+# because `git clean -xfd` deletes gitignored files by design.
+vault-init.json
+*.key
+*.asc
+*.snap
+.env
+*CLAUDE.md
+
+# --- Local .terraform directories ---
 .terraform/
 
 # .tfstate files
