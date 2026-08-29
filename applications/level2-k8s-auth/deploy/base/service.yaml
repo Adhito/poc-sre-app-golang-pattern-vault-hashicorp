@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: level2-k8s-auth
+  namespace: poc-hashicorp-vault-application
+  labels:
+    app: level2-k8s-auth
+spec:
+  type: ClusterIP
+  selector:
+    app: level2-k8s-auth
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

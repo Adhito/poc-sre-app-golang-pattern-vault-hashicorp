@@ -1,0 +1,35 @@
+# WRITTEN IN B0, ACTIVATED AND TESTED IN PHASE B5. See level1's copy for why
+# it is not in `resources:` yet.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: level2-k8s-auth
+  namespace: poc-hashicorp-vault-application
+  labels:
+    app: level2-k8s-auth
+spec:
+  podSelector:
+    matchLabels:
+      app: level2-k8s-auth
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # Vault, and only Vault. Unlike Level 1, this level does need the egress —
+    # it authenticates and reads on its own behalf.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - { protocol: TCP, port: 8200 }

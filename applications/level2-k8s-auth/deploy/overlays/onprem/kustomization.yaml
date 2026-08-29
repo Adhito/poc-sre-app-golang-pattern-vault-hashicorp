@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: poc-hashicorp-vault-application
+
+resources:
+  - ../../base
+
+images:
+  - name: level2-k8s-auth
+    # TODO(phase-b0): newName must be the registry address from
+    # documents/environment.md (Stage A Phase A0). Placeholder, not a guess.
+    newName: REGISTRY_FROM_DOCS_ENVIRONMENT_MD/level2-k8s-auth
+    newTag: GIT_SHA
