@@ -263,6 +263,64 @@ a `deploy/overlays/onprem` path that does not yet exist syncs to a hard error.
 
 ## Stage A
 
+### Vault 2.0 made root recovery authenticated — a break-glass identity was added
+
+**Phase A6, found 2026-09-11 while re-verifying pins.** The pin moved from Vault
+1.17 to 2.0.4. The 2.0.0 changelog lists a single "breaking" change — an SDK
+change nothing here uses — but two entries filed under routine `CHANGES` break
+D10's recovery model: `sys/generate-root` and `sys/rekey` are now
+**authenticated by default**. D10 revokes root at the end of A6 and relies on
+`operator generate-root` to get one back. On 2.x that command needs a token, so
+after revocation there would be nothing to authenticate with: a lockout.
+
+**Resolution (owner's decision):** keep the new authenticated default, rather
+than set `enable_unauthenticated_access` to restore the 1.x behaviour. Added a
+break-glass `userpass` identity (`bootstrap/95-create-breakglass.sh`, policy
+`breakglass-admin`) that can *start* root generation and rekey, can do nothing
+else, and still needs three shares to *finish*. `99-revoke-root.sh` now refuses
+to revoke root unless a live break-glass login succeeds. It is a userpass
+password rather than a stored token because tokens expire — a break-glass token
+that silently hit its max TTL would fail exactly when needed, which is the D6
+reviewer-JWT footgun again.
+
+**Worth keeping as a lesson:** a changelog's "breaking changes" heading is the
+vendor's judgement of what breaks *most* users. It is not a substitute for
+reading every entry against your own design.
+
+Also caught here: the first draft of the recovery commands generated the OTP
+inline (`-init -otp="$(… -generate-otp)"`), discarding the value the final
+`-decode` step needs — the regenerated root token would have been unrecoverable.
+Corrected in `95-`, `99-`, and `runbooks/seal-unseal.md`.
+
+### Three Helm values were silently ignored — caught by diffing against the chart
+
+**Phase A2, found 2026-09-11.** Moving the chart from 0.28.1 to 0.34.1, every
+key in `values-onprem.yaml` was checked against the 0.34.1 chart's own
+`values.yaml`. Two were not chart keys at all and had never done anything:
+`server.imagePullPolicy` (the chart reads `server.image.pullPolicy`) and
+`ui.enabled_service`. Both fixed.
+
+A third, `server.readinessProbe.path`, was flagged but is correct — the chart
+supports it as a commented-out option, and its template renders an `httpGet`
+probe when it is set. It matters more than it looks: the chart's **default**
+probe is `exec: vault status -tls-skip-verify`, which marks a *sealed* pod **not
+ready** and bypasses TLS verification. The explicit
+`/v1/sys/health?…sealedcode=204` path is what makes a sealed pod pass readiness —
+the premise of the seal-alert design (D15).
+
+Wrong keys in Helm values do not error; they are simply never read. Same failure
+class as a ServiceMonitor with the wrong discovery label.
+
+**A worse problem surfaced in the same pass: the liveness probe.** It was set to
+`/v1/sys/health?standbyok=true` — without `sealedcode`/`uninitcode`. That
+endpoint returns 503 when sealed and 501 when uninitialised, so Kubernetes would
+have killed every sealed pod about 70 seconds after start. A restarted peer could
+never have been unsealed (restarted mid-unseal, back sealed, loop), and on the
+first Phase A2 boot the pod would likely have died before `operator init`
+finished. Fixed by giving liveness the same codes as readiness. This one would
+not have been silent — it would have looked like a crash-looping chart on day
+one, with nothing pointing at the probe.
+
 ### Stage A manifests live in the platform repo, not this one
 
 **Phase A0.** D18 places Stage A under `platform/kubernetes/base/…` here, with
@@ -283,14 +341,28 @@ assumes a Stage A file is reachable by relative path will not find it.
 ### Kubernetes 1.29 — a failed A0 gate, proceeded past deliberately
 
 **Phase A0.** P2 requires ≥ 1.32 and says to bump if still on 1.29 (EOL). The
-cluster is on v1.29.0. The owner chose to record the gate as failed and design
-around it rather than upgrade a cluster shared with the observability and
-tracing-poc teams.
+control plane reports **v1.29.15**; the kubelets are **v1.29.0** (the apt pin in
+the cluster repo's `settings.yaml`). The owner chose to record the gate as failed
+and design around it rather than upgrade a cluster shared with the observability
+and tracing-poc teams.
 
-**Resolution:** every component is pinned to a version supporting 1.29 —
-cert-manager `v1.16.2`, Vault chart `0.28.1` (Vault `1.17.6`), ESO `0.10.7`,
-PostgreSQL `16.6-alpine`. Rule 4 says phase gates are hard, so this is recorded
+**Resolution:** every component is pinned to the newest release that supports
+1.29, verified against upstream on 2026-09-11 — cert-manager `v1.18.6`, Vault
+chart `0.34.1` (Vault `2.0.4`), ESO `0.13.0`, local-path-provisioner `v0.0.37`,
+PostgreSQL `16.15-alpine`. Rule 4 says phase gates are hard, so this is recorded
 as an accepted deviation, not a passed gate. The upgrade remains outstanding.
+
+**ESO is in the same position as cert-manager.** Its support table shows 0.13.x
+(`k8s 1.19 → 1.31`, EOL 2025-02-04) as the newest line for 1.29 — every release
+from 0.14 needs ≥ 1.32. Two of the five pins are end-of-life *because of* this
+gate. Vault itself is unaffected: chart 0.34.1 declares `kubeVersion >= 1.20`.
+
+**The cost is now concrete (verified 2026-09-11).** In cert-manager's support
+matrix, 1.18 is the newest line that runs on Kubernetes 1.29 — and 1.18 reached
+**end of life on 2026-03-10**. Staying on 1.29 means installing a cert-manager
+that no longer receives fixes, for the component that issues Vault's TLS. That is
+the strongest single argument for doing the upgrade before Stage A goes live
+rather than after.
 
 ### ESO `ClusterSecretStore` uses `v1beta1`, not `v1`
 
@@ -326,20 +398,27 @@ matches several and scrapes the same pods repeatedly.
 PRD's actual requirement — per-peer seal status — more directly than the named
 Service would.
 
-### Prometheus may not be operator-managed — A9.4 is at risk
+### Prometheus is not operator-managed — A9.4 cannot be done additively
 
-**Phase A0.5, unresolved.** The observability stack on this cluster is Grafana
-LGTM (`observability` namespace, owned by another team's ArgoCD app). Its
-metrics store is Mimir, which does not necessarily run the Prometheus Operator.
+**Phase A0.5 — resolved 2026-09-11 by `preflight.sh`.** Check 5a:
+`servicemonitors.monitoring.coreos.com` and
+`prometheusrules.monitoring.coreos.com` are **absent**. The observability stack
+(Grafana LGTM, `observability` namespace, owned by another team's ArgoCD app)
+does not run the Prometheus Operator.
 
-**Open.** If check 5a shows `servicemonitors.monitoring.coreos.com` and
-`prometheusrules.monitoring.coreos.com` are absent, D15's additive-object
-approach is not available, and adding a scrape target would mean editing a
-config that currently works — which Rule 8 forbids. The `vault-monitoring` child
-is written and ready for the case where the CRDs exist; if they do not, it
-should be removed from the applications directory and the finding reported
-rather than worked around.
+**Consequence.** D15's additive-object approach is unavailable. Adding a scrape
+target would mean editing a scrape config that currently works, which Rule 8
+forbids. Per the PRD this is reported, not worked around: the `vault-monitoring`
+child has been moved from `argocd/applications/` to `argocd/disabled/`, so
+`root-platform` does not sync it. The manifests stay intact for the day the CRDs
+exist.
 
-The discovery labels (check 5b) are likewise unknown; both objects carry a
-placeholder `release: kube-prometheus-stack` that must be corrected before they
-will be scraped. Wrong label = applies cleanly, never scraped, no error.
+**What this leaves.** There is no automated seal detection. A sealed follower —
+which passes its readiness probe — is invisible until someone runs the manual
+check in `runbooks/seal-unseal.md`. The PRD names that gap; it is now the actual
+state rather than a hypothetical, and should be treated as such.
+
+**Open for the observability team, not this POC:** either install the Prometheus
+Operator CRDs, or add a static scrape job for `vault-internal:8200/v1/sys/metrics`
+to their own config. Both are their decisions. Checks 5b and 5c are moot until
+one happens.

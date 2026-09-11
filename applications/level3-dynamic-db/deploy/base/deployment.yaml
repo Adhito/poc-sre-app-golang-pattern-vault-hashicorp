@@ -56,8 +56,10 @@ spec:
             # or verify-full, and the CA would be mounted alongside Vault's.
             - name: PGSSLMODE
               value: disable
-            # TODO(phase-b3): confirm against the table Stage A Phase A7 seeds.
-            # The PRD says "a seeded demo table" without naming it.
+            # Confirmed against Stage A: the seed in the cluster repo
+            # (script-manifest/utility-hashicorp-vault/base/postgres/
+            # seed-configmap.yaml) creates `demo`. If that seed is re-edited,
+            # this is the coupling to check.
             - name: DEMO_TABLE
               value: demo
           volumeMounts:
