@@ -61,9 +61,19 @@ security context, the same multi-stage distroless `Containerfile`, and a
 make build test image push deploy logs verify destroy
 ```
 
-`REGISTRY` has no default. It is read from `documents/environment.md`, which Stage A
-Phase A0 populates from the live cluster. `make image` fails loudly if it is
-unset rather than guessing.
+`REGISTRY` has no default. It is read off the live cluster by Stage A Phase A0
+and recorded in `environment.md` — which lives in the **cluster repo**, beside
+the Stage A manifests, not here:
+
+```
+poc-platform-engineering-iac-vagrant-ansible-k8s-cluster-kubeadm-calico
+  script-manifest/utility-hashicorp-vault/documents/environment.md
+```
+
+No copy is kept in this repository, deliberately: a copy drifts, and
+`environment.md` is precisely the file whose job is to be the one place a value
+is true. `make image` fails loudly if `REGISTRY` is unset rather than guessing —
+and note it is still marked unverified in that file.
 
 ## Build status
 
@@ -72,7 +82,7 @@ unset rather than guessing.
 | 1 | done | done | done | **no — Stage A pending** |
 | 2 | done | done | done | **no — Stage A pending** |
 | 3 | done | done | done | **no — Stage A pending** |
-| 4 | `go.mod` only | — | — | — |
+| 4 | done | done | done | **no — Stage A pending, and the fixture does not exist yet** |
 
 Nothing here has run against a real Vault. Every failure injection, the audit
 correlation, the 4×4 matrix, and every measured number in Phase B6 are still

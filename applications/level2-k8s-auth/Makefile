@@ -1,8 +1,14 @@
 # Uniform targets across all four levels: build image push deploy logs verify destroy
 #
-# REGISTRY has no default on purpose — the real value is recorded in
-# documents/environment.md by Stage A Phase A0.
-#   export REGISTRY=<value from documents/environment.md>
+# REGISTRY has no default on purpose. It is recorded by Stage A Phase A0 in
+# environment.md, which lives in the CLUSTER repo, not this one:
+#
+#   poc-platform-engineering-iac-vagrant-ansible-k8s-cluster-kubeadm-calico
+#     script-manifest/utility-hashicorp-vault/documents/environment.md
+#
+# Still marked unverified there.
+#
+#   export REGISTRY=<the value from that file>
 
 LEVEL     := level2-k8s-auth
 NAMESPACE := poc-hashicorp-vault-application
@@ -22,7 +28,7 @@ test:
 
 require-registry:
 ifndef REGISTRY
-	$(error REGISTRY is unset — read it from documents/environment.md, do not guess)
+	$(error REGISTRY is unset — see this Makefile's header. Do not guess)
 endif
 
 image: require-registry

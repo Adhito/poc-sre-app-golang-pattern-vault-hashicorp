@@ -27,16 +27,78 @@ produced *outside this repository*. Stage B's `Makefile`s and overlays currently
 tell the reader to get `REGISTRY` from `documents/environment.md`, a path that
 does not exist here and may never.
 
-Needs deciding before Phase B0 runs:
+**Answered on the Stage A side.** `environment.md` and the three runbooks now
+exist, beside the manifests they describe:
 
-- Does `environment.md` live in the cluster repo next to the Stage A manifests,
-  or is a copy kept here for Stage B to read?
-- If it stays in the cluster repo, Stage B's references should name the repo and
-  path explicitly rather than implying a local file.
+```
+poc-platform-engineering-iac-vagrant-ansible-k8s-cluster-kubeadm-calico
+  └── script-manifest/utility-hashicorp-vault/documents/
+        ├── environment.md
+        └── runbooks/{seal-unseal,snapshot-restore,upgrade}.md
+```
 
-Either answer is fine; the current state — a reference to a local path that is
-not populated by anything — is the one that is not. Same question applies to
-`key-custody.md` and the three runbooks, which Stage B's docs cross-reference.
+No copy is kept in this repo. A copy drifts, and `environment.md` is precisely
+the file whose purpose is to be the one place a value is true.
+
+**Done here.** All four `Makefile`s, all four overlay comments, and
+`applications/README.md` now name the cluster repo and path explicitly instead
+of implying a local `documents/` file. The `require-registry` guard still fails
+the build when `REGISTRY` is unset, and its message points at the Makefile
+header where that path is spelled out.
+
+**Note for whoever does that:** `REGISTRY` is still one of six values marked ❌
+unverified in `environment.md`. The file is written; several of its answers are
+not, and each carries the command that produces it.
+
+`key-custody.md` now exists alongside it, in the same directory.
+
+### A test key that was never actually locked — the quiet kind of false pass
+
+**Phase B4.** Level 4's tests generate their own keypair rather than committing
+one. The first version serialised it **without passphrase encryption**, so
+`importKeyring` unlocked nothing and the wrong-passphrase injection passed with
+any passphrase at all. The test was green and proving nothing.
+
+It was caught only because `importKeyring` logs `keys_unlocked`, which read `0`.
+Without that field the suite would have looked fine indefinitely.
+
+**Resolution:** `newTestKey` now calls `PrivateKey.Encrypt` on the primary key
+**and every subkey** before serialising with `SerializePrivateWithoutSigning`
+(re-signing needs the key decrypted, which is what was just undone). The import
+log now reads `keys_unlocked=2`, and the wrong-passphrase test has something
+real to fail against.
+
+Generalises: a negative test that has never been *seen* to fail is a hypothesis,
+the same way an unrun denial test is. When a test asserts that something is
+rejected, confirm it rejects for the reason intended — the CLAUDE.md rule 5
+argument applies to unit tests too.
+
+Encrypted **subkeys** matter here beyond the test: a message is usually
+encrypted to a subkey rather than the primary, so unlocking only the primary
+gives "imported fine, cannot decrypt."
+
+### `0400` and tmpfs cannot be verified on Windows
+
+**Phase B4.** `TestKeyFileIsWrittenReadOnly` asserted no group/other permission
+bits. Windows has no POSIX mode model — Go synthesises `0444` for any read-only
+file regardless of what `OpenFile` requested — so it failed on a correct
+implementation.
+
+**Resolution:** the test asserts the file is non-writable on Windows and skips
+the exact-mode check with a message saying where the real check happens. The
+`0400` and tmpfs guarantees are verified in-cluster:
+
+```bash
+kubectl exec deploy/level4-pgp-decrypt -- ls -l /keys
+kubectl exec deploy/level4-pgp-decrypt -- df -h /keys   # must report tmpfs
+```
+
+The O_EXCL clobber assertion runs on every platform — it was originally placed
+after the skip, where it never executed on this workstation.
+
+Third item now on the "cannot be verified here" list, with `go test -race` and
+the live-cluster injections. Worth stating plainly: **the Windows workstation
+can prove logic, not deployment behaviour.**
 
 ### The Level 3 demo table has no name in either PRD
 
@@ -44,10 +106,15 @@ not populated by anything — is the one that is not. Same question applies to
 something real to `SELECT`" and never names it. `/query` needs an identifier.
 
 **Resolution:** the table name is `DEMO_TABLE`, defaulting to `demo`, set in the
-Deployment with a TODO. Confirm it against whatever Phase A7 actually creates
-before B3 runs. The name is interpolated through `pgx.Identifier{}.Sanitize()`
-rather than concatenated raw — it comes from the environment, which is not a
-trust boundary worth assuming.
+Deployment with a TODO. The name is interpolated through
+`pgx.Identifier{}.Sanitize()` rather than concatenated raw — it comes from the
+environment, which is not a trust boundary worth assuming.
+
+**Confirmed against Stage A — the default is correct, no TODO left.** Stage A's
+seed originally created `widgets`; it was renamed to `demo` to match this
+default, so Level 3 needs no `DEMO_TABLE` override. Source of truth:
+`script-manifest/utility-hashicorp-vault/base/postgres/seed-configmap.yaml` in
+the cluster repo. If that seed is ever re-edited, this is the coupling to check.
 
 `/query` also runs `SELECT current_user` independently of the demo table, so a
 wrong table name produces a clean `42P01` classified as a *database* fault

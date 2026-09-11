@@ -7,8 +7,8 @@ resources:
   - ../../base
 
 images:
-  - name: level2-k8s-auth
+  - name: level4-pgp-decrypt
     # TODO(phase-b0): newName must be the registry address from
-    # environment.md in the cluster repo (Stage A Phase A0). Placeholder, not a guess.
-    newName: REGISTRY_FROM_DOCS_ENVIRONMENT_MD/level2-k8s-auth
+    # environment.md in the cluster repo. Placeholder, not a guess.
+    newName: REGISTRY_FROM_DOCS_ENVIRONMENT_MD/level4-pgp-decrypt
     newTag: GIT_SHA

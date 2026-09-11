@@ -10,13 +10,13 @@
 #
 #   export REGISTRY=<the value from that file>
 
-LEVEL     := level3-dynamic-db
+LEVEL     := level4-pgp-decrypt
 NAMESPACE := poc-hashicorp-vault-application
 TAG       ?= $(shell git rev-parse --short HEAD)
 IMAGE      = $(REGISTRY)/$(LEVEL):$(TAG)
 OVERLAY   := deploy/overlays/onprem
 
-.PHONY: all build test race image push deploy logs verify destroy require-registry creds query
+.PHONY: all build test image push deploy logs verify destroy require-registry require-fixture keystatus tmpfs
 
 all: test build
 
@@ -26,18 +26,18 @@ build:
 test:
 	go test ./...
 
-# The lease deadline is written by the lease manager and read by handlers.
-# Run this on the dev workspace — the race detector needs cgo and a C compiler,
-# which the Windows workstation does not have.
-race:
-	CGO_ENABLED=1 go test -race ./...
-
 require-registry:
 ifndef REGISTRY
 	$(error REGISTRY is unset — see this Makefile's header. Do not guess)
 endif
 
-image: require-registry
+# The image is useless without the fixture, and a missing one fails at runtime
+# inside the pod rather than at build time. Catch it here.
+require-fixture:
+	@test -f fixtures/secret-message.txt.gpg || \
+		(echo "FAIL: fixtures/secret-message.txt.gpg is missing — it is produced by Stage A Phase A7 step 5. See fixtures/README.md" && exit 1)
+
+image: require-registry require-fixture
 	podman build -t $(IMAGE) -f Containerfile .
 
 push: require-registry
@@ -49,20 +49,26 @@ deploy: require-registry
 logs:
 	kubectl logs -n $(NAMESPACE) -l app=$(LEVEL) -f
 
-# The observation window. Watch `username` and `rotation_count` across a rotation.
-creds:
+# The level's evidence: `exists` must be false, `on_disk_ms` is the measured window.
+keystatus:
 	kubectl -n $(NAMESPACE) port-forward deploy/$(LEVEL) 8080:8080 & \
-	sleep 2; curl -s localhost:8080/creds-info | jq
+	sleep 2; curl -s localhost:8080/key-status | jq
 
-query:
-	curl -s localhost:8080/query | jq '{current_user, vault_username, row_count}'
+# Confirm /keys is a real tmpfs and that nothing is left in it.
+tmpfs:
+	kubectl -n $(NAMESPACE) exec deploy/$(LEVEL) -- df -h /keys
+	kubectl -n $(NAMESPACE) exec deploy/$(LEVEL) -- ls -la /keys
 
 verify:
 	@echo "== no TLS bypass (CLAUDE.md rule 3) =="
 	@! grep -rnE "InsecureSkipVerify[[:space:]]*[:=][[:space:]]*true" . || (echo "FAIL" && exit 1)
 	@echo "OK"
-	@echo "== no cross-level imports (D2) =="
-	@! grep -nE "level[0-9]" go.mod | grep -v "^module" || (echo "FAIL" && exit 1)
+	@echo "== the maintained openpgp fork, not the deprecated one (D10) =="
+	@! grep -q "golang.org/x/crypto/openpgp" go.mod || (echo "FAIL: deprecated x/crypto/openpgp" && exit 1)
+	@grep -q "ProtonMail/go-crypto" go.mod || (echo "FAIL: expected ProtonMail/go-crypto" && exit 1)
+	@echo "OK"
+	@echo "== no key material committed =="
+	@! git ls-files | grep -E '\.(asc|key)$$' || (echo "FAIL: key material tracked in git" && exit 1)
 	@echo "OK"
 	@go test ./...
 

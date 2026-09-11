@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: level4-pgp-decrypt
+  namespace: poc-hashicorp-vault-application
+  labels:
+    app: level4-pgp-decrypt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: level4-pgp-decrypt
+  template:
+    metadata:
+      labels:
+        app: level4-pgp-decrypt
+    spec:
+      serviceAccountName: level4-app
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: level4-pgp-decrypt   # replaced by the overlay
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: VAULT_ADDR
+              value: https://vault.vault.svc:8200
+            - name: VAULT_ROLE
+              value: level4-app
+            - name: VAULT_CACERT
+              value: /vault/tls/ca.crt
+            - name: SECRET_PATH
+              value: secret/data/level4/pgp
+            - name: KEY_DIR
+              value: /keys
+            - name: OUTPUT_DIR
+              value: /output
+            - name: FIXTURE
+              value: /fixtures/secret-message.txt.gpg
+          volumeMounts:
+            - name: vault-ca
+              mountPath: /vault/tls
+              readOnly: true
+            - name: keys
+              mountPath: /keys
+            - name: output
+              mountPath: /output
+          securityContext:
+            # readOnlyRootFilesystem is load-bearing here, not decoration: the
+            # two tmpfs mounts below are the ONLY writable paths in the
+            # container, so the key cannot be written anywhere else even by
+            # mistake.
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { cpu: 300m, memory: 128Mi }
+      volumes:
+        - name: vault-ca
+          configMap:
+            name: vault-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
+        # medium: Memory is the whole point (D9). A plain emptyDir lives on the
+        # NODE'S DISK, where the PGP private key would be recoverable from the
+        # filesystem and could survive into node backups. tmpfs never touches
+        # disk. Verify it is real: kubectl exec -- df -h /keys
+        - name: keys
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: output
+          emptyDir:
+            medium: Memory
+            sizeLimit: 10Mi

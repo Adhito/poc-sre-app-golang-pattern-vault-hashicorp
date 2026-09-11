@@ -9,7 +9,7 @@ resources:
 images:
   - name: level1-env-secret
     # TODO(phase-b0): newName must be the registry address recorded in
-    # documents/environment.md by Stage A Phase A0. It is deliberately a placeholder
+    # environment.md in the cluster repo by Stage A Phase A0. It is deliberately a placeholder
     # rather than a guess — CLAUDE.md forbids hardcoding environment values.
     newName: REGISTRY_FROM_DOCS_ENVIRONMENT_MD/level1-env-secret
     newTag: GIT_SHA   # set by `make deploy` / the ArgoCD image updater

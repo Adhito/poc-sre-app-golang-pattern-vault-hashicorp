@@ -9,6 +9,6 @@ resources:
 images:
   - name: level3-dynamic-db
     # TODO(phase-b0): newName must be the registry address from
-    # documents/environment.md. Placeholder, not a guess.
+    # environment.md in the cluster repo. Placeholder, not a guess.
     newName: REGISTRY_FROM_DOCS_ENVIRONMENT_MD/level3-dynamic-db
     newTag: GIT_SHA
