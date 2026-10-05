@@ -1,0 +1,25 @@
+# Everything in this repo is consumed on Linux — Makefiles run on the dev
+# workspace VM, Containerfiles build in a Linux stage, manifests are applied to
+# the cluster, and platform/bootstrap/*.sh will be executed by a shell.
+#
+# The workstation has core.autocrlf=true, which would check these out with CRLF.
+# A Makefile with CRLF fails obscurely; a shell script with CRLF fails as
+# "bad interpreter: /bin/bash^M". Normalise to LF in the repo and on disk.
+* text=auto eol=lf
+
+# Belt and braces for the files where CRLF is actively breaking, not merely untidy.
+*.go        text eol=lf
+*.sh        text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.md        text eol=lf
+go.mod      text eol=lf
+go.sum      text eol=lf
+Makefile    text eol=lf
+Containerfile text eol=lf
+
+# Binaries must never be touched.
+*.png  binary
+*.jpg  binary
+*.gpg  binary
+*.snap binary

@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: level4-pgp-decrypt
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Adhito/poc-sre-app-golang-pattern-vault-hashicorp.git
+    targetRevision: main
+    path: applications/level4-pgp-decrypt/deploy/overlays/onprem
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: poc-hashicorp-vault-application
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions:
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff: { duration: 10s, factor: 2, maxDuration: 3m }

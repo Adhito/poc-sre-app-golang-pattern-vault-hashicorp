@@ -1,0 +1,41 @@
+# WRITTEN IN B0/B3, ACTIVATED AND TESTED IN PHASE B5. See level1's copy for why
+# it is not in `resources:` yet.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: level3-dynamic-db
+  namespace: poc-hashicorp-vault-application
+  labels:
+    app: level3-dynamic-db
+spec:
+  podSelector:
+    matchLabels:
+      app: level3-dynamic-db
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - { protocol: TCP, port: 8200 }
+    # Postgres — this level only. Levels 1, 2 and 4 have no business reaching
+    # the database, and B5 verifies that they cannot.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - { protocol: TCP, port: 5432 }

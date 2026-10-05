@@ -1,0 +1,40 @@
+# WRITTEN IN B0, ACTIVATED AND TESTED IN PHASE B5.
+#
+# Deliberately NOT listed in kustomization.yaml resources yet. B5's exit gate
+# requires these to be tested ("verify by attempting a connection from a Level 1
+# pod to the Level 3 Service and confirming it is refused"), and an untested
+# default-deny applied during B1–B4 would break each level's verification in a
+# way that reads as an application bug. Add it to `resources:` in B5.
+#
+# Intra-namespace via podSelector, not namespaceSelector: all four levels share
+# poc-hashicorp-vault-application (Stage B D15).
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: level1-env-secret
+  namespace: poc-hashicorp-vault-application
+  labels:
+    app: level1-env-secret
+spec:
+  podSelector:
+    matchLabels:
+      app: level1-env-secret
+  policyTypes: [Ingress, Egress]
+  # Ingress: nothing. No other level may reach this pod. Verification is via
+  # `kubectl port-forward`, which does not traverse pod-network policy.
+  ingress: []
+  egress:
+    # DNS only. Level 1 makes no other network call — it never talks to Vault,
+    # which is the level's whole claim. If this policy ever needs a Vault
+    # egress rule, something has gone wrong with the pattern.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }

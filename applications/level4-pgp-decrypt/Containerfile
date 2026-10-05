@@ -1,0 +1,17 @@
+# Multi-stage, distroless static, non-root (Stage B D5).
+# Versions pinned deliberately (CLAUDE.md rule 10).
+FROM golang:1.26.5 AS build
+WORKDIR /src
+COPY go.mod go.sum* ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /app .
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /app /app
+# The fixture is CIPHERTEXT and ships in the image. The private key that opens
+# it exists only in Vault — which is itself a small demonstration of the point.
+COPY --from=build /src/fixtures/ /fixtures/
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/app"]

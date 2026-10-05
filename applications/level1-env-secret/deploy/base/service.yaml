@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: level1-env-secret
+  namespace: poc-hashicorp-vault-application
+  labels:
+    app: level1-env-secret
+spec:
+  type: ClusterIP
+  selector:
+    app: level1-env-secret
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

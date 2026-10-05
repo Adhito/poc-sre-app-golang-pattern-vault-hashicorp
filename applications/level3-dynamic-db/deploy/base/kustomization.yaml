@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: poc-hashicorp-vault-application
+
+resources:
+  - serviceaccount.yaml
+  - deployment.yaml
+  - service.yaml
+  # - networkpolicy.yaml   # added in Phase B5, where its gate requires testing
+
+commonLabels:
+  app.kubernetes.io/part-of: vault-poc-applications
+  app.kubernetes.io/component: level3-dynamic-db

@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: level1-env-secret
+  namespace: poc-hashicorp-vault-application
+  labels:
+    app: level1-env-secret
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: level1-env-secret
+  template:
+    metadata:
+      labels:
+        app: level1-env-secret
+    spec:
+      # Explicit, always. All four levels share one namespace, so the
+      # ServiceAccount name is the entire isolation boundary — an omitted
+      # serviceAccountName silently falls back to `default` and is a security
+      # defect, not a typo (Stage B D15).
+      serviceAccountName: level1-app
+      automountServiceAccountToken: false   # Level 1 needs no cluster identity
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: level1-env-secret   # replaced by the overlay
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            # The whole integration. The process reads os.Getenv and cannot
+            # tell that these values originated in Vault.
+            - secretRef:
+                name: level1-app-secret
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits:   { cpu: 200m, memory: 64Mi }

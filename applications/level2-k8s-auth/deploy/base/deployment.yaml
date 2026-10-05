@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: level2-k8s-auth
+  namespace: poc-hashicorp-vault-application
+  labels:
+    app: level2-k8s-auth
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: level2-k8s-auth
+  template:
+    metadata:
+      labels:
+        app: level2-k8s-auth
+    spec:
+      # Note what is ABSENT from this manifest: no Vault token, no password, no
+      # credential of any kind. The ServiceAccount below is the credential.
+      serviceAccountName: level2-app
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: level2-k8s-auth   # replaced by the overlay
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # In-cluster Service. The MetalLB VIP and NodePort 30004 are for
+            # human CLI access, not for pods.
+            - name: VAULT_ADDR
+              value: https://vault.vault.svc:8200
+            - name: VAULT_ROLE
+              value: level2-app
+            - name: VAULT_CACERT
+              value: /vault/tls/ca.crt
+            # API path, not the CLI-visible path. KV v2 reads go through
+            # secret/data/<path> — a policy or a client written against
+            # secret/<path> is denied, silently.
+            - name: SECRET_PATH
+              value: secret/data/level2/app
+          volumeMounts:
+            - name: vault-ca
+              mountPath: /vault/tls
+              readOnly: true
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            # /healthz deliberately does NOT depend on Vault. If Vault is
+            # unreachable the app must back off and recover, not be killed and
+            # restarted into the same condition (Phase B2 injection 4).
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits:   { cpu: 200m, memory: 64Mi }
+      volumes:
+        - name: vault-ca
+          configMap:
+            name: vault-ca      # created in Phase B0
+            items:
+              - key: ca.crt
+                path: ca.crt

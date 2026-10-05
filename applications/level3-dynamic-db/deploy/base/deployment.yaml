@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: level3-dynamic-db
+  namespace: poc-hashicorp-vault-application
+  labels:
+    app: level3-dynamic-db
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: level3-dynamic-db
+  template:
+    metadata:
+      labels:
+        app: level3-dynamic-db
+    spec:
+      serviceAccountName: level3-app
+      # The app revokes its lease on SIGTERM so no orphaned Postgres role is
+      # left behind. Give it room to finish in-flight queries and make the
+      # revoke call before SIGKILL.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: level3-dynamic-db   # replaced by the overlay
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: VAULT_ADDR
+              value: https://vault.vault.svc:8200
+            - name: VAULT_ROLE
+              value: level3-app
+            - name: VAULT_CACERT
+              value: /vault/tls/ca.crt
+            - name: VAULT_DB_CREDS_PATH
+              value: database/creds/level3-app
+            - name: PGHOST
+              value: postgres.poc-hashicorp-vault-application.svc
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: appdb
+            # sslmode=disable matches Stage A Phase A7's connection_url. The POC
+            # Postgres has no TLS; in a real environment this would be require
+            # or verify-full, and the CA would be mounted alongside Vault's.
+            - name: PGSSLMODE
+              value: disable
+            # Confirmed against Stage A: the seed in the cluster repo
+            # (script-manifest/utility-hashicorp-vault/base/postgres/
+            # seed-configmap.yaml) creates `demo`. If that seed is re-edited,
+            # this is the coupling to check.
+            - name: DEMO_TABLE
+              value: demo
+          volumeMounts:
+            - name: vault-ca
+              mountPath: /vault/tls
+              readOnly: true
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            # Ready only while the credential is valid — a pod whose lease has
+            # lapsed should stop taking traffic even though the process is fine.
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            # Liveness must NOT depend on Vault or Postgres. Restarting the pod
+            # into the same outage turns a recoverable degradation into a
+            # crash-loop.
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits:   { cpu: 500m, memory: 128Mi }
+      volumes:
+        - name: vault-ca
+          configMap:
+            name: vault-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
