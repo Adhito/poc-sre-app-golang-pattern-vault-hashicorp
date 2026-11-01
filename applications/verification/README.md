@@ -78,8 +78,19 @@ the lab cluster has.
 certificate issued since looks "not yet valid". That shows up as a TLS failure,
 the exact moment someone reaches for `curl -k`. The guard reads cluster time
 from the scheduler's leader-election lease and refuses if the two differ by more
-than `CLOCK_SKEW_MAX_S` (default 120s). If the workspace clock is off, fix it —
-for example `sudo timedatectl set-ntp true` — rather than raising the limit.
+than `CLOCK_SKEW_MAX_S` (default 120s). If the workspace clock is off, fix it
+rather than raising the limit. Set it from the cluster's own clock, the same
+lease the guard reads:
+
+```bash
+sudo date -u -s "$(kubectl -n kube-system get lease kube-scheduler -o jsonpath='{.spec.renewTime}')"
+```
+
+`sudo timedatectl set-ntp true` is **not** enough on the dev workspace. NTP is
+already on and reports "synchronized", but `timedatectl timesync-status` shows
+`Server: n/a (ntp.ubuntu.com)`: it has no server it can reach, so the clock
+never gets corrected. Expect the clock to drift again after the VM is
+suspended, until it can reach a time source.
 
 **Observed on the dev workspace (2026-10-31):** `jq` 1.6, `curl` 7.81, `git`, and
 `vault` 2.0.4 are present. **Missing:** `gitleaks` (step 6 will be skipped, which

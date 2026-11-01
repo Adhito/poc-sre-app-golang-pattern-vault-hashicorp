@@ -60,6 +60,22 @@ from the Windows workstation, which has no `jq` and is not the target:
   yet valid" — a TLS failure inviting `curl -k`. **Mitigated:** every script now
   refuses to run when local and cluster time differ by more than 120s. **Still to
   do:** fix the VM's clock; the guard only stops the damage.
+
+  **Update 2026-11-01: fixed by hand, but the cause is still there.** The
+  suggested fix, `sudo timedatectl set-ntp true`, would not have worked. NTP was
+  already on and `timedatectl` said "System clock synchronized: yes", yet the
+  VM still read 2026-10-05 while the host read 2026-11-01.
+  `timedatectl timesync-status` shows why: `Server: n/a (ntp.ubuntu.com)`.
+  timesyncd has no server it can reach, so "synchronized" is stale. The clock
+  was set from the cluster's own (`sudo date -u -s "$(kubectl -n kube-system get
+  lease kube-scheduler -o jsonpath='{.spec.renewTime}')"`) and the timezone set
+  to `Asia/Jakarta`, so commits made in the VM carry `+0700` like those made on
+  the host. Until the VM can reach a time source (an NTP server it can resolve,
+  or VirtualBox Guest Additions time sync), expect the drift to return after a
+  suspend. The guard will catch it. The B5 scripts' refusal message and README
+  now give the working command instead of `set-ntp`.
+  *Production alternative:* hosts sync to an internal NTP/chrony source that
+  is monitored, so drift raises an alert rather than surfacing as a TLS error.
 - **Two guard tests passed for the wrong reason.** On a copy that was not a git
   checkout, `lib.sh` failed to load at all, so the "refuses" tests saw a non-zero
   exit and passed. The "proceeds" test — the control — is what exposed it. Those

@@ -174,8 +174,10 @@ check_clock() {
   if ((abs > CLOCK_SKEW_MAX_S)); then
     die "this machine's clock is $((skew / 86400))d $(((abs % 86400) / 3600))h off the cluster's (${skew}s; local $(date -u +%FT%TZ), cluster ~$rt).
        TLS certificate checks and results timestamps would both be wrong. Fix the
-       clock first — e.g. 'sudo timedatectl set-ntp true' or restart the VM's time
-       sync — and never work around a TLS failure it causes."
+       clock first — e.g. set it from the cluster's:
+         sudo date -u -s \"\$(kubectl -n kube-system get lease kube-scheduler -o jsonpath='{.spec.renewTime}')\"
+       ('timedatectl set-ntp true' does not help if NTP is on but has no reachable
+       server) — and never work around a TLS failure it causes."
   fi
   echo "clock: within ${abs}s of the cluster"
 }
