@@ -23,6 +23,7 @@
 source "$(dirname "$0")/lib.sh"
 
 require_cmd kubectl jq git
+require_lab_cluster
 start_results networkpolicy "Phase B5 — NetworkPolicy"
 
 PG_SVC="postgres.$NS.svc"
@@ -41,8 +42,11 @@ done
 
 section "1b — no selector rewritten by kustomize (commonLabels regression guard)"
 # commonLabels once injected our labels into the egress selectors, which would
-# have denied DNS to every level and Postgres to Level 3 — silently. Any
-# app.kubernetes.io/* key inside a selector means that has come back.
+# have denied DNS to every level and Postgres to Level 3 — silently. Either of
+# the two labels WE add (part-of, component) appearing inside a selector means
+# that has come back. Only those two: other app.kubernetes.io/* keys are
+# legitimate selectors — Level 3 selects Postgres by app.kubernetes.io/name,
+# because that is the label Stage A puts on it.
 for lvl in "${LEVELS[@]}"; do
   if ! rendered="$(render_json "$(base_dir "$lvl")")"; then
     fail "$lvl: base did not render — selectors not audited (an empty render is not a clean one)"
@@ -53,10 +57,17 @@ for lvl in "${LEVELS[@]}"; do
     | [ if $o.kind == "Deployment" then {w: "Deployment.spec.selector", m: $o.spec.selector.matchLabels} else empty end,
         if $o.kind == "Service" then {w: "Service.spec.selector", m: ($o.spec.selector // {})} else empty end,
         if $o.kind == "NetworkPolicy" then
+          # The inner parentheses are load-bearing: in jq a comma binds tighter
+          # than a pipe, so without them the podSelector of the policy itself is
+          # piped through select(.podSelector) and silently dropped, and only
+          # egress selectors are ever audited. Caught by test/jq-filters.sh.
+          # (No apostrophes in this comment: it sits inside a single-quoted
+          # shell string.)
           ({w: "NetworkPolicy.podSelector", m: $o.spec.podSelector.matchLabels},
-           ($o.spec.egress // [])[].to[]? | select(.podSelector) | {w: "NetworkPolicy.egress.to.podSelector", m: .podSelector.matchLabels})
+           (($o.spec.egress // [])[].to[]? | select(.podSelector) | {w: "NetworkPolicy.egress.to.podSelector", m: .podSelector.matchLabels}))
         else empty end ]
-    | .[] | select(.m | keys | any(startswith("app.kubernetes.io/"))) | "\(.w) \(.m | tojson)"' <<<"$rendered")"
+    | .[] | select(.m | keys | any(. == "app.kubernetes.io/part-of" or . == "app.kubernetes.io/component"))
+    | "\(.w) \(.m | tojson)"' <<<"$rendered")"
   if [[ -z "$leaks" ]]; then
     pass "$lvl: every selector is exactly as written"
   else
@@ -80,9 +91,11 @@ section "3 — the live labels these policies depend on"
 n="$( { kubectl -n kube-system get pods -l k8s-app=kube-dns -o name 2>/dev/null || true; } | wc -l)"
 [[ "$n" -gt 0 ]] && pass "$n DNS pod(s) carry k8s-app=kube-dns" ||
   fail "no pod in kube-system carries k8s-app=kube-dns — the DNS egress rule matches nothing"
-n="$( { kubectl -n "$NS" get pods -l app=postgres -o name 2>/dev/null || true; } | wc -l)"
-[[ "$n" -gt 0 ]] && pass "Postgres pod carries app=postgres" ||
-  fail "no pod in $NS carries app=postgres — Level 3's egress rule matches nothing (check Stage A's Postgres labels)"
+# Stage A labels Postgres app.kubernetes.io/name=postgres (observed 2026-10-31).
+# Level 3's egress rule selects on exactly that; keep the two in step.
+n="$( { kubectl -n "$NS" get pods -l app.kubernetes.io/name=postgres -o name 2>/dev/null || true; } | wc -l)"
+[[ "$n" -gt 0 ]] && pass "Postgres pod carries app.kubernetes.io/name=postgres" ||
+  fail "no pod in $NS carries app.kubernetes.io/name=postgres — Level 3's egress rule matches nothing (check Stage A's Postgres labels)"
 for ns in kube-system vault; do
   v="$(kubectl get namespace "$ns" -o jsonpath='{.metadata.labels.kubernetes\.io/metadata\.name}' 2>/dev/null || true)"
   [[ "$v" == "$ns" ]] && pass "namespace $ns carries kubernetes.io/metadata.name=$ns" ||

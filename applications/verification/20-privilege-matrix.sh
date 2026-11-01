@@ -26,6 +26,7 @@ AUTHZ_DENY_PATTERN="${AUTHZ_DENY_PATTERN:-service account name not authorized}"
 INVALID_ROLE_PATTERN="${INVALID_ROLE_PATTERN:-invalid role name}"
 
 require_cmd kubectl jq curl git
+require_lab_cluster
 require_vault_env
 make_secret_dir
 start_results privilege-matrix "Phase B5 — cross-privilege matrix"

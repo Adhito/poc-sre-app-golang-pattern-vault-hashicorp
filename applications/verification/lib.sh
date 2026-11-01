@@ -33,7 +33,13 @@ declare -A POLICY_FOR_ROLE=(
 )
 POLICY_NAMES=(level1-reader level2-reader level3-db level4-pgp eso-reader)
 
-REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
+# Results record the commit they ran against, so these scripts must run from a
+# git checkout. Fail with a reason — under `set -e` a bare failure here would
+# abort the sourcing script with no message at all.
+if ! REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null)"; then
+  echo "ERROR: run these scripts from a git checkout of the repository (results record the commit)." >&2
+  exit 2
+fi
 RESULTS_DIR="${RESULTS_DIR:-$REPO_ROOT/documents/results/phase-b5}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 
@@ -55,7 +61,7 @@ start_results() {
     echo
     echo "- Run: \`$RUN_ID\` (UTC)"
     echo "- Commit: \`$(git -C "$REPO_ROOT" rev-parse --short HEAD)\`$(git -C "$REPO_ROOT" diff --quiet || echo ' **(working tree dirty — results are not reproducible from this commit)**')"
-    echo "- Cluster context: \`$(kubectl config current-context 2>/dev/null || echo unknown)\`"
+    echo "- Cluster context: \`$(kubectl config current-context 2>/dev/null || echo unknown)\` — identity confirmed by node \`${B5_EXPECTED_NODE:-<unchecked>}\`"
     echo "- Namespace: \`$NS\`"
     echo
   } >"$RESULT_FILE"
@@ -117,6 +123,61 @@ require_env() {
   for v in "$@"; do
     [[ -n "${!v:-}" ]] || die "$v is unset. See applications/verification/README.md."
   done
+}
+
+# Refuse to run against the wrong cluster.
+#
+# The current kubectl context is whatever the shell last used, and the context
+# name proves nothing: kubeadm names every cluster `kubernetes-admin@kubernetes`.
+# The workstation these scripts were written on defaults to an unrelated EKS
+# context — and 10-independence --destructive deletes Deployments. So identity
+# is checked by something only the lab cluster has: a node with a known name.
+#
+# B5_EXPECTED_NODE has no default. Node names are environment values, recorded
+# in environment.md in the cluster repo; CLAUDE.md forbids hardcoding them.
+require_lab_cluster() {
+  require_env B5_EXPECTED_NODE
+  local ctx server
+  ctx="$(kubectl config current-context 2>/dev/null || echo '<none>')"
+  server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo '<unknown>')"
+  if ! kubectl get node "$B5_EXPECTED_NODE" --request-timeout=10s >/dev/null 2>&1; then
+    die "refusing to run: context '$ctx' ($server) has no node named '$B5_EXPECTED_NODE'.
+       This is either the wrong cluster or an unreachable one. Switch context, or
+       correct B5_EXPECTED_NODE from environment.md — never just unset the check."
+  fi
+  echo "cluster: context '$ctx' ($server) — node '$B5_EXPECTED_NODE' present"
+  check_clock
+}
+
+# Refuse to run when this machine's clock disagrees with the cluster's.
+#
+# TLS certificate validity is judged against the LOCAL clock. A VM resumed from
+# suspend without a time sync can be weeks behind — the dev workspace was found
+# ~26 days slow on 2026-10-31 — and then every certificate issued since looks
+# "not yet valid". That surfaces as a TLS failure, which is exactly the moment
+# someone reaches for `curl -k` (CLAUDE.md rule 3). It would also stamp results
+# files with the wrong date.
+#
+# Cluster time comes from the scheduler's leader-election lease: renewed every
+# few seconds by the control plane, readable with a plain `get`, nothing to
+# install. Unmeasurable skew is a warning, not a pass and not a block.
+CLOCK_SKEW_MAX_S="${CLOCK_SKEW_MAX_S:-120}"
+check_clock() {
+  local rt srv now skew abs
+  rt="$(kubectl -n kube-system get lease kube-scheduler -o jsonpath='{.spec.renewTime}' 2>/dev/null || true)"
+  if [[ -z "$rt" ]] || ! srv="$(date -u -d "$rt" +%s 2>/dev/null)"; then
+    echo "WARNING: could not read cluster time — clock skew NOT checked. Confirm with: date -u" >&2
+    return 0
+  fi
+  now="$(date -u +%s)"
+  skew=$((now - srv)); abs=${skew#-}
+  if ((abs > CLOCK_SKEW_MAX_S)); then
+    die "this machine's clock is $((skew / 86400))d $(((abs % 86400) / 3600))h off the cluster's (${skew}s; local $(date -u +%FT%TZ), cluster ~$rt).
+       TLS certificate checks and results timestamps would both be wrong. Fix the
+       clock first — e.g. 'sudo timedatectl set-ntp true' or restart the VM's time
+       sync — and never work around a TLS failure it causes."
+  fi
+  echo "clock: within ${abs}s of the cluster"
 }
 
 require_vault_env() {

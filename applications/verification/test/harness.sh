@@ -7,14 +7,29 @@
 # and that the sweep patterns neither match their own source nor flag the
 # levels' real (safe) log lines.
 #
-# NOT covered: the jq filters. Those first execute on a machine with jq — run
-# this harness there, then `shellcheck -x *.sh`, before the first real B5 run.
+# The jq filters are covered separately by test/jq-filters.sh, which needs jq.
+# Run both on the dev workspace before the first real B5 run, plus
+# `shellcheck -x *.sh` once shellcheck is installed there.
 #
 #   bash applications/verification/test/harness.sh
 set -uo pipefail
 V="${1:-$(cd "$(dirname "$0")/.." && pwd)}"   # applications/verification
 SCR="$(mktemp -d)"
 trap 'rm -rf "$SCR"' EXIT
+
+# lib.sh insists on a git checkout (results record the commit). When the harness
+# is run on a plain copy — e.g. shipped to the dev workspace as a tarball — put
+# that copy in a throwaway repo first, rather than letting every test that
+# sources lib.sh fail for an unrelated reason.
+if ! git -C "$V" rev-parse --show-toplevel >/dev/null 2>&1; then
+  mkdir -p "$SCR/repo/applications"
+  cp -r "$V" "$SCR/repo/applications/verification"
+  git -C "$SCR/repo" init -q
+  git -C "$SCR/repo" add -A
+  git -C "$SCR/repo" -c user.name=harness -c user.email=harness@invalid commit -qm harness
+  V="$SCR/repo/applications/verification"
+  echo "(not a git checkout — testing a copy in a throwaway repo)"
+fi
 T_PASS=0 T_FAIL=0
 ok()  { T_PASS=$((T_PASS+1)); echo "  ok    $*"; }
 bad() { T_FAIL=$((T_FAIL+1)); echo "  FAIL  $*"; }
@@ -24,9 +39,16 @@ check() { local d="$1"; shift; if "$@"; then ok "$d"; else bad "$d"; fi; }
 mkdir -p "$SCR/bin"
 cat >"$SCR/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
-sub=""; for a in "$@"; do case "$a" in config|exec) sub="$a"; break ;; esac; done
+sub=""; for a in "$@"; do case "$a" in config|exec|get) sub="$a"; break ;; esac; done
 case "$sub" in
   config) echo "stub-context" ;;
+  get)
+    # `kubectl get lease ...` — cluster time, as the scheduler last renewed it.
+    for a in "$@"; do [[ "$a" == lease ]] && { printf '%s' "${STUB_LEASE:-}"; exit 0; }; done
+    # `kubectl get node <name> ...` — the node exists only if it is $STUB_NODE.
+    args=("$@"); for i in "${!args[@]}"; do
+      if [[ "${args[i]}" == node ]]; then [[ "${args[i+1]:-}" == "${STUB_NODE:-}" ]]; exit; fi
+    done ;;
   exec)
     case "${STUB_MODE:-}" in
       exec-fails) exit 1 ;;
@@ -108,6 +130,40 @@ TLS=( "Insecure""SkipVerify[[:space:]]*[:=][[:space:]]*true" "-tls-skip""-verify
 for p in "${TLS[@]}"; do
   hits="$(grep -nE -e "$p" "$V"/*.sh || true)"
   check "no script matches /$p/" [ -z "$hits" ]
+done
+
+echo "== T9: wrong-cluster guard =="
+# The guard is the only thing between `10-independence --destructive` and
+# whatever cluster the shell happens to point at. It must REFUSE, not warn.
+# A refusal only counts if it is THIS refusal. Asserting on exit status alone
+# once let these pass because lib.sh failed to load at all.
+guard() { ( source "$V/lib.sh"; require_lab_cluster ) >"$SCR/guard.out" 2>&1; }
+said() { grep -q -- "$1" "$SCR/guard.out"; }
+now_iso="$(date -u +%Y-%m-%dT%H:%M:%S.000000Z)"
+
+STUB_LEASE="$now_iso" STUB_NODE=devnodemaster01 B5_EXPECTED_NODE=devnodemaster01 guard
+check "expected node present -> proceeds" [ $? -eq 0 ]
+STUB_LEASE="$now_iso" STUB_NODE=ip-10-0-1-23.ec2.internal B5_EXPECTED_NODE=devnodemaster01 guard
+rc=$?; check "expected node absent (some other cluster) -> refuses, saying why" \
+  bash -c '[ "$1" -ne 0 ] && grep -q "refusing to run" "$2"' _ "$rc" "$SCR/guard.out"
+( unset B5_EXPECTED_NODE; STUB_LEASE="$now_iso" STUB_NODE=devnodemaster01 guard ); rc=$?
+check "B5_EXPECTED_NODE unset -> refuses, never defaults" \
+  bash -c '[ "$1" -ne 0 ] && grep -q "B5_EXPECTED_NODE is unset" "$2"' _ "$rc" "$SCR/guard.out"
+
+echo "== T10: clock-skew check =="
+past="$(date -u -d '26 days ago' +%Y-%m-%dT%H:%M:%S.000000Z)"
+STUB_LEASE="$past" STUB_NODE=n B5_EXPECTED_NODE=n guard; rc=$?
+check "clock 26 days off the cluster -> refuses, saying why" \
+  bash -c '[ "$1" -ne 0 ] && grep -q "clock is 26d" "$2"' _ "$rc" "$SCR/guard.out"
+STUB_LEASE="$now_iso" STUB_NODE=n B5_EXPECTED_NODE=n guard; rc=$?
+check "clock in step -> proceeds and reports it" \
+  bash -c '[ "$1" -eq 0 ] && grep -q "clock: within" "$2"' _ "$rc" "$SCR/guard.out"
+STUB_LEASE="" STUB_NODE=n B5_EXPECTED_NODE=n guard; rc=$?
+check "cluster time unreadable -> proceeds, but WARNS it was not checked" \
+  bash -c '[ "$1" -eq 0 ] && grep -q "clock skew NOT checked" "$2"' _ "$rc" "$SCR/guard.out"
+for s in "$V"/[0-4]*.sh; do
+  check "$(basename "$s") calls the guard before touching the cluster" \
+    grep -qx 'require_lab_cluster' "$s"
 done
 
 echo "== T8: log patterns fire on secrets, not on safe log lines =="

@@ -15,6 +15,7 @@
 source "$(dirname "$0")/lib.sh"
 
 require_cmd kubectl jq git
+require_lab_cluster
 start_results hardening-sweep "Phase B5 — hardening sweep"
 
 # Patterns are assembled from pieces so that THIS file does not match them —

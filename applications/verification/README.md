@@ -11,10 +11,13 @@ of roles, policies and why one PRD test was broken, read
 [`documents/vault-roles-and-policies.md`](../../documents/vault-roles-and-policies.md)
 first.
 
-> **Status: written, not yet run against a cluster.** The pure-bash logic is
-> tested locally (`test/harness.sh`, 37 checks). The `jq` filters have **not**
-> executed anywhere yet — the workstation they were written on has no `jq`. Run
-> the harness and `shellcheck` on the dev workspace before the first real run.
+> **Status: written and tested, not yet run against the cluster.** Both test
+> suites pass on the dev workspace itself (Ubuntu 22.04, bash 5.1, jq 1.6):
+> `test/harness.sh` 48/48 for the bash logic, and `test/jq-filters.sh` 20/20 for
+> the `jq` filters, which it extracts from the scripts so it tests the real code.
+> Running them there found and fixed a genuine bug the Windows-only tests had
+> missed (see `documents/troubleshooting.md`). Not yet done: `shellcheck`, which
+> is not installed on the workspace.
 
 ---
 
@@ -46,7 +49,10 @@ Run on the **Linux dev workspace**, not the Windows workstation.
 
 | Need | For |
 |---|---|
-| `bash` ≥ 4, `kubectl`, `jq` ≥ 1.6, `curl`, `git` | everything |
+| A **git checkout** of this repository | everything — results record the commit they ran against |
+| `B5_EXPECTED_NODE` — the name of a node that exists only on the lab cluster | everything. Every script refuses to run unless that node is present. No default: node names come from `environment.md` |
+| The machine's clock within 2 minutes of the cluster's | everything. Checked automatically; see below |
+| `bash` ≥ 4, `kubectl`, `jq` ≥ 1.6, `curl` ≥ 7.55, `git` | everything |
 | `gitleaks` | step 6. Without it, step 6 is **skipped**, which fails the run |
 | `VAULT_ADDR` (https, the MetalLB VIP), `VAULT_CACERT` | 00, 20, and 30's step 9 |
 | `VAULT_TOKEN` with `list`+`read` on `auth/kubernetes/role/*` | 30's step 9 only. Without it, step 9 is skipped |
@@ -54,14 +60,41 @@ Run on the **Linux dev workspace**, not the Windows workstation.
 | Permission to `create serviceaccounts/token` in the namespace | 20 mints a short-lived token per ServiceAccount |
 
 ```bash
+export B5_EXPECTED_NODE=<a node name from environment.md>
 export VAULT_ADDR=https://<metallb-vip>:8200
 export VAULT_CACERT=/etc/vault-poc/ca.crt
 ```
+
+**Why the cluster guard exists.** The shell's current kubectl context is
+whatever it last used, and the context *name* proves nothing — kubeadm names
+every cluster `kubernetes-admin@kubernetes`. The workstation these scripts were
+written on defaults to an unrelated EKS context, and `10-independence.sh
+--destructive` deletes Deployments. So identity is checked by something only
+the lab cluster has.
+
+**Why the clock check exists.** TLS certificate validity is judged against the
+*local* clock. A VM resumed from suspend without a time sync can be weeks behind
+— the dev workspace was found ~26 days slow on 2026-10-31 — and then every
+certificate issued since looks "not yet valid". That shows up as a TLS failure,
+the exact moment someone reaches for `curl -k`. The guard reads cluster time
+from the scheduler's leader-election lease and refuses if the two differ by more
+than `CLOCK_SKEW_MAX_S` (default 120s). If the workspace clock is off, fix it —
+for example `sudo timedatectl set-ntp true` — rather than raising the limit.
+
+**Observed on the dev workspace (2026-10-31):** `jq` 1.6, `curl` 7.81, `git`, and
+`vault` 2.0.4 are present. **Missing:** `gitleaks` (step 6 will be skipped, which
+fails the run), `shellcheck`, and the `argocd` CLI (needed for the sync-policy
+commands below). `kubectl` is **v1.29.15** against a v1.36.4 server — outside the
+supported ±1 skew; it works for these scripts but should be upgraded.
 
 **Before the first run:**
 
 ```bash
 bash applications/verification/test/harness.sh
+```
+
+```bash
+bash applications/verification/test/jq-filters.sh
 ```
 
 ```bash
@@ -176,8 +209,10 @@ The script then checks:
    into the egress selectors, which would have denied DNS to every level.
 2. **The policies exist in the cluster.**
 3. **The live labels they depend on exist**: `k8s-app=kube-dns` on the DNS pods,
-   `app=postgres` on Stage A's Postgres, and `kubernetes.io/metadata.name` on
-   the namespaces. If any is missing, its rule silently matches nothing.
+   `app.kubernetes.io/name=postgres` on Stage A's Postgres, and
+   `kubernetes.io/metadata.name` on the namespaces. If any is missing, its rule
+   silently matches nothing. (The Postgres label was first assumed to be
+   `app: postgres`; checking the cluster showed otherwise.)
 4. **The four apps are still Ready.** Kubelet probes have to survive `ingress: []`.
 5. **Real connection attempts** from a probe pod wearing each level's label.
 

@@ -10,6 +10,7 @@
 source "$(dirname "$0")/lib.sh"
 
 require_cmd kubectl jq curl git
+require_lab_cluster
 require_vault_env
 make_secret_dir
 start_results preflight "Phase B5 — preflight"

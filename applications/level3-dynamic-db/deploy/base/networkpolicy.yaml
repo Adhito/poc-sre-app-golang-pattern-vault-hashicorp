@@ -33,9 +33,16 @@ spec:
         - { protocol: TCP, port: 8200 }
     # Postgres — this level only. Levels 1, 2 and 4 have no business reaching
     # the database, and B5 verifies that they cannot.
+    #
+    # The label is Stage A's, so it must match what Stage A actually puts on the
+    # Postgres pod — checked on the cluster 2026-10-31:
+    #   app.kubernetes.io/name=postgres   (NOT `app: postgres`)
+    # A selector that matches no pod denies the traffic silently. If Stage A's
+    # Postgres labels change, this rule breaks with no error; 40-networkpolicy.sh
+    # checks the label is present before trusting any result.
     - to:
         - podSelector:
             matchLabels:
-              app: postgres
+              app.kubernetes.io/name: postgres
       ports:
         - { protocol: TCP, port: 5432 }

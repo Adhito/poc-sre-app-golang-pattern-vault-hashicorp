@@ -23,6 +23,7 @@ DESTRUCTIVE=false
 [[ "${1:-}" == "--destructive" ]] && DESTRUCTIVE=true
 
 require_cmd kubectl jq git
+require_lab_cluster
 start_results independence "Phase B5 — independence"
 md "- Mode: \`$([[ $DESTRUCTIVE == true ]] && echo destructive || echo read-only)\`"
 
