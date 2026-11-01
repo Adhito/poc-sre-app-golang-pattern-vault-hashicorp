@@ -75,6 +75,16 @@ No copy is kept in this repository, deliberately: a copy drifts, and
 is true. `make image` fails loudly if `REGISTRY` is unset rather than guessing —
 and note it is still marked unverified in that file.
 
+## Phase B5 verification
+
+`verification/` holds the Phase B5 scripts: independence tests, the 4×4
+privilege matrix plus a full login grid, a hardening sweep, and NetworkPolicy
+probes. They are written and locally tested, but have not been run against a
+cluster. See [`verification/README.md`](verification/README.md) for the run order
+and prerequisites, and
+[`documents/vault-roles-and-policies.md`](../documents/vault-roles-and-policies.md)
+for the role/policy model the matrix tests.
+
 ## Build status
 
 | Level | Code | Manifests | ArgoCD child | Verified against a cluster |

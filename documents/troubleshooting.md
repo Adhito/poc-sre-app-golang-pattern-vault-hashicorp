@@ -7,6 +7,53 @@ a PRD**. Newest first within each stage.
 
 ## Stage B
 
+### B5 scripts: three ways a denial check could pass without testing anything
+
+**Phase B5, found while writing the scripts.** The same failure mode as the
+`level4-pgp` test and the unlocked Level 4 test key, in three new places. Each is
+now handled explicitly in `applications/verification/`:
+
+- **A dead probe pod read as "blocked".** If `kubectl exec` failed, the output
+  held no "Connected to", so the connection read as dropped — and every
+  isolation check would have passed. Probes now classify each attempt as
+  ALLOW / BLOCK / REFUSED / NORESOLVE / ERROR, and only the first two are
+  verdicts.
+- **An unresolvable name read as "blocked".** A mistyped Service name never puts
+  a packet in front of the policy, yet looked exactly like a drop. It is now
+  NORESOLVE, a failure.
+- **An empty render read as "no selector leaks".** If `kubectl kustomize` failed,
+  the selector audit received nothing and reported nothing wrong. A failed
+  render is now a failure.
+
+The probe classifier also reads curl's verbose text, which is not a stable
+interface. Each probe pod therefore calibrates itself against two controls whose
+answers are known in advance — kube-dns TCP 53 (must connect) and the API server
+(must be dropped) — and discards that level's results if either reads wrong.
+
+**General rule, now applied throughout B5:** for every check, ask what an
+*absent* or *failed* observation reads as. If the answer is "pass", the check is
+wrong.
+
+### B5 matrix uses `kubectl create token`, not a throwaway pod per SA
+
+**Phase B5.** The PRD (B5 step 10) describes testing the matrix "from a
+throwaway pod running as each SA in turn". `20-privilege-matrix.sh` instead mints
+a 10-minute token per ServiceAccount with `kubectl create token` and logs in to
+Vault from the dev workspace.
+
+The identity Vault validates is the same: it checks the token through the same
+TokenReview call either way, and matches the same namespace and SA name against
+the role. What changes is the network path — the request arrives over the
+MetalLB VIP rather than from inside the namespace. That path is not what the
+matrix is testing; `40-networkpolicy.sh` tests in-cluster reachability
+separately, from real pods. The gain is no dependency on an image, a scheduler,
+or Pod Security admission for the authorization test.
+
+**Not yet executed.** The scripts' `jq` filters have never run: the workstation
+they were written on has no `jq`. The pure-bash logic is covered by
+`applications/verification/test/harness.sh`. Run that and `shellcheck` on the dev
+workspace before the first real B5 run.
+
 ### `commonLabels` leaked into NetworkPolicy selectors — every policy would have broken DNS
 
 **Phase B5, found before activation.** All four `base/kustomization.yaml` files
