@@ -7,6 +7,116 @@ a PRD**. Newest first within each stage.
 
 ## Stage B
 
+### `commonLabels` leaked into NetworkPolicy selectors — every policy would have broken DNS
+
+**Phase B5, found before activation.** All four `base/kustomization.yaml` files
+used `commonLabels` to add `app.kubernetes.io/part-of` and
+`app.kubernetes.io/component`. `commonLabels` does not only add labels to object
+metadata — it writes them into **every selector kustomize knows about**,
+including a NetworkPolicy's egress `to.podSelector`.
+
+Rendered with the NetworkPolicies switched on, Level 3's egress rules came out as:
+
+```yaml
+- to:
+  - podSelector:
+      matchLabels:
+        k8s-app: kube-dns
+        app.kubernetes.io/component: level3-dynamic-db   # injected
+- to:
+  - podSelector:
+      matchLabels:
+        app: postgres
+        app.kubernetes.io/component: level3-dynamic-db   # injected
+```
+
+No DNS pod and no Postgres pod carries those labels, so **DNS would have been
+denied for all four levels and Postgres for Level 3.** Every level would have
+failed, and the policies would have applied without a single error — a textbook
+case of CLAUDE.md rule 6.
+
+**Resolution:** all four switched to kustomize's `labels` transformer with
+`includeSelectors: false` and `includeTemplates: true`. The labels still reach
+object metadata and pod templates, but no selector is touched. Verified by
+rendering all four with the NetworkPolicies enabled and checking every
+`Deployment`, `Service` and `NetworkPolicy` selector: each now contains exactly
+what was written.
+
+**One-time consequence.** This changes each Deployment's `spec.selector`, which
+is **immutable**. Nothing has been deployed yet, so it costs nothing now. If any
+level *had* been deployed with the old selectors, ArgoCD's sync would fail with
+`field is immutable`, and the Deployment would need deleting and recreating. It
+must land before the first B0 deploy.
+
+**Found by rendering, not by reading.** The manifests looked correct on the page.
+The B5 NetworkPolicy script now re-renders and checks selectors before testing,
+and also confirms the two live labels these policies depend on — `k8s-app:
+kube-dns` on the DNS pods and `app: postgres` on Stage A's Postgres pod — since
+neither can be checked from this repository.
+
+### `level4-pgp` is a policy, not a role — the SA/role mismatch test passed for the wrong reason
+
+**Phase B5.** Stage A A6.8 and Stage B B5 both specify:
+
+> *"`level1-app` SA requesting role `level4-pgp` → denied"*
+
+The roles are named `level{1..4}-app` (A6.6). `level4-pgp` is the **policy**
+(A6.5). Requesting a role that doesn't exist is refused with `invalid role
+name`, so the test goes green **without ever reaching the check it exists to
+prove** — that Level 4's role refuses Level 1's ServiceAccount.
+
+**Decision (owner): do not create a `level4-pgp` role; fix the test.** A role by
+that name would have to bind *some* ServiceAccount. Bound to `level4-app`, it is
+a redundant second route to the PGP private key. Bound to anything else, it
+admits the wrong workload. Either way it breaks B5 step 9's
+one-ServiceAccount-one-role rule.
+
+**Resolution:** the B5 scripts test against the real role, `level4-app`, and
+assert on the refusal *reason*. `service account name not authorized` passes;
+`invalid role name` fails the test even though it is a refusal. The scripts run
+the full 5×4 login grid (four level SAs plus `default`, against four roles)
+rather than the single cell the PRD names.
+
+**Knock-on.** Under one-SA-per-role binding, no pod can log in through another
+level's role. So two failure injections describe something that cannot happen:
+
+- **B2 injection 1** — `VAULT_ROLE=level4-pgp` → "login succeeds, read 403"
+- **B4 injection 6** — a role lacking `level4-pgp` → "clean 403"
+
+Both are marked **superseded by the B5 matrix** in the Level 2 and Level 4
+READMEs. The read-level denial they were after is exactly what the matrix's
+twelve denials prove, with each SA using its *own* role.
+
+Same lesson as the unlocked Level 4 test key: **a denial test has to be seen to
+deny for the intended reason.** Explained without jargon in
+`documents/vault-roles-and-policies.md`.
+
+### `level1-app` keeps its Vault role — the two PRDs disagreed
+
+**Phase B5.** A direct contradiction between the PRDs:
+
+- **Stage B B1:** `level1-app` is *"created but never granted a Vault role —
+  demonstrating that it needs none."*
+- **Stage A A6.6:** creates role `level1-app` bound to that ServiceAccount.
+- **Stage B B5:** the matrix expects `level1-app` → `level1/app` to be **allow**.
+
+CLAUDE.md says to stop and ask when a PRD is internally inconsistent, so this
+went to the owner.
+
+**Decision (owner): keep the role**, following A6.6. The B5 matrix row stays as
+the PRD wrote it.
+
+**What it costs.** The role is an **unused credential**. Level 1's application
+never logs in to Vault; ESO does that through its own role. Anyone who can mint
+a `level1-app` token in the namespace (`create serviceaccounts/token`) can log in
+through it. Level 1's Deployment sets `automountServiceAccountToken: false`, so a
+compromised Level 1 *pod* has no token to use — the exposure is a token minted
+outside the pod.
+
+**Production alternative:** remove the role. An identity no workload uses should
+hold no credential. Level 1's README and `serviceaccount.yaml` were updated: both
+previously stated, as B1 does, that the SA had no role.
+
 ### Documentation lives in `documents/`, not `docs/` — a deliberate deviation
 
 **Phase B0.** Both PRDs and CLAUDE.md specify a `docs/` directory throughout:

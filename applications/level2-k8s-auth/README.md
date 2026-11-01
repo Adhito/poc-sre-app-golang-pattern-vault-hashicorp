@@ -102,12 +102,22 @@ curl -s localhost:8080/token-info | jq '.lookup_self.ttl'   # watch it count dow
 
 | Test | Expected |
 |---|---|
-| `VAULT_ROLE=level4-pgp` | Login **succeeds**, secret read **403**. Least privilege observed, not assumed |
+| ~~`VAULT_ROLE=level4-pgp`~~ | **Superseded by the Phase B5 matrix** — see below |
 | `serviceAccountName: default` | Login **fails at step 3** — the SA/role binding does not match |
 | `vault token revoke -accessor <a>` | 403, then the app re-authenticates and recovers on the next call |
 | Vault scaled to 0 | Logs failures, backs off, recovers when Vault returns. **No crash-loop** |
 
-The first three are unit-tested against a stub Vault in `vault_login_test.go`
+**Why the first row is superseded.** As written it cannot happen. `level4-pgp`
+is a *policy*, not a role — the role is `level4-app` — so the login fails with
+"invalid role name", not "succeeds". And pointing it at the real `level4-app`
+role still fails at login, because that role admits only Level 4's
+ServiceAccount. Under one-ServiceAccount-per-role binding, no pod can log in
+through another level's role, so "login succeeds, read 403" is impossible by
+design. The read-denial it was after is exactly what the Phase B5 matrix's
+twelve denials prove, each using an SA's *own* token. See
+`documents/vault-roles-and-policies.md`.
+
+The remaining injections are unit-tested against a stub Vault in `vault_login_test.go`
 (`TestReadKVReauthGivesUpOnPersistentDenial`,
 `TestReadKVReauthRecoversFromRevokedToken`). The stub proves the client logic;
 it does not prove the Vault role bindings, which is what the in-cluster run is for.
