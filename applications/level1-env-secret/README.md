@@ -26,9 +26,17 @@ ExternalSecret ──► Kubernetes Secret `level1-app-secret`   [at rest in etc
 process environment ──► os.Getenv("APP_GREETING"), os.Getenv("APP_API_KEY")
 ```
 
-Note who authenticates: **ESO does, not the app.** `ServiceAccount: level1-app`
-exists and is bound to no Vault role at all. It doesn't need one, and the
-Deployment sets `automountServiceAccountToken: false` to make that concrete.
+Note who authenticates: **ESO does, not the app.** The app never logs in to
+Vault and needs no identity to work. The Deployment sets
+`automountServiceAccountToken: false`, so the running pod holds no
+ServiceAccount token at all.
+
+`ServiceAccount: level1-app` *does* have a Vault role, `level1-app`, with policy
+`level1-reader`. That is an owner decision: the two PRDs disagree (Stage B B1
+says no role, Stage A A6.6 creates one), and A6.6 was chosen so the Phase B5
+privilege matrix can test this SA's row as the PRD wrote it. The role is unused
+by the application. Treat it as what it is — an unused credential — and see
+`documents/troubleshooting.md` for the trade-off.
 
 ## Code walkthrough
 

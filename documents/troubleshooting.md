@@ -7,6 +7,249 @@ a PRD**. Newest first within each stage.
 
 ## Stage B
 
+### The rebuilt cluster broke two Stage B manifests — found by checking, 2026-10-31
+
+**Phase B5 (pre-run).** With the cluster now reachable through the dev
+workspace, Stage B's assumptions were checked against what is actually
+deployed rather than against the PRDs. Two would have failed:
+
+- **Level 1's `ExternalSecret` would be rejected.** It used `v1beta1`, chosen for
+  ESO 0.13. The cluster runs ESO `v2.11.0`, which serves `v1` only. **Fixed:**
+  back to `external-secrets.io/v1`, the PRD's original. The fields used are
+  identical in both versions.
+- **Level 3's NetworkPolicy would have cut it off from Postgres.** It selected
+  `app: postgres`; Stage A labels the pod `app.kubernetes.io/name=postgres`. A
+  selector matching no pod denies traffic silently. **Fixed:** the rule now
+  selects `app.kubernetes.io/name: postgres`, and `40-networkpolicy.sh` checks
+  that exact label before trusting any result.
+
+**The B5 scripts now refuse to run against the wrong cluster.** The workstation
+these scripts were written on defaults to an unrelated EKS context, and kubeadm
+names every cluster `kubernetes-admin@kubernetes`, so neither the context nor its
+name proves anything. Every script now calls `require_lab_cluster`, which needs
+`B5_EXPECTED_NODE` (no default; read it from `environment.md`) and refuses unless
+that node exists. This matters most for `10-independence.sh --destructive`, which
+deletes Deployments.
+
+**Also observed, outside Stage B's control — for PE:**
+
+| Finding | Effect on Stage B |
+|---|---|
+| ArgoCD cannot fetch any repository: `lookup github.com on 172.17.0.10:53: server misbehaving` | **Nothing can sync** — Stage A's apps report `Unknown`, and `root-applications` would sync nothing either. Cluster DNS cannot resolve external names; CoreDNS's upstream forwarding is the likely place to look |
+| ClusterSecretStore `vault-backend`: `Ready=False`, `InvalidProviderConfig: unable to create client` | Phase A8's gate fails, which blocks Level 1 and the B0 checklist |
+| Vault StatefulSet at **1** replica (unsealed, Raft, `2.0.4`) | Stage A is at A2/A3, not A4. B0 requires three healthy peers |
+| Dev workspace `kubectl` client `v1.29.15` against a `v1.36.4` server | Outside the supported ±1 skew. The B5 scripts run there |
+| Dev workspace lacks `podman`, `gitleaks`, `shellcheck`, `argocd` | No image can be built there (PRD P9, D6). B5 step 6 would be skipped. The scripts cannot be linted. The ArgoCD sync-policy commands need the CLI |
+
+The workspace does have what the B5 scripts need otherwise: `jq` 1.6 (≥ 1.6 for
+`--rawfile`), `curl` 7.81 (≥ 7.55 for `-H @file`), `git`, and `vault` 2.0.4.
+
+**Running the tests on the workspace found three more problems** — none visible
+from the Windows workstation, which has no `jq` and is not the target:
+
+- **A real bug in the selector guard.** In jq a comma binds tighter than a pipe,
+  so `({podSelector entry}, egress[] | select(.podSelector) | …)` piped the
+  NetworkPolicy's *own* podSelector into the egress filter, where it was dropped.
+  Only egress selectors were ever audited. Every planted leak in the first test
+  run happened to be in egress, so those passed; the one leak planted in a
+  podSelector caught it. **Fixed** with explicit parentheses, and pinned by a
+  dedicated regression test in `test/jq-filters.sh`.
+- **The workspace clock is ~26 days slow.** The VM still believes it is
+  2026-10-05 (cluster time, from the scheduler lease: 2026-10-31). TLS validity is
+  judged against the local clock, so certificates issued since would look "not
+  yet valid" — a TLS failure inviting `curl -k`. **Mitigated:** every script now
+  refuses to run when local and cluster time differ by more than 120s. **Still to
+  do:** fix the VM's clock; the guard only stops the damage.
+
+  **Update 2026-11-01: fixed by hand, but the cause is still there.** The
+  suggested fix, `sudo timedatectl set-ntp true`, would not have worked. NTP was
+  already on and `timedatectl` said "System clock synchronized: yes", yet the
+  VM still read 2026-10-05 while the host read 2026-11-01.
+  `timedatectl timesync-status` shows why: `Server: n/a (ntp.ubuntu.com)`.
+  timesyncd has no server it can reach, so "synchronized" is stale. The clock
+  was set from the cluster's own (`sudo date -u -s "$(kubectl -n kube-system get
+  lease kube-scheduler -o jsonpath='{.spec.renewTime}')"`) and the timezone set
+  to `Asia/Jakarta`, so commits made in the VM carry `+0700` like those made on
+  the host. Until the VM can reach a time source (an NTP server it can resolve,
+  or VirtualBox Guest Additions time sync), expect the drift to return after a
+  suspend. The guard will catch it. The B5 scripts' refusal message and README
+  now give the working command instead of `set-ntp`.
+  *Production alternative:* hosts sync to an internal NTP/chrony source that
+  is monitored, so drift raises an alert rather than surfacing as a TLS error.
+- **Two guard tests passed for the wrong reason.** On a copy that was not a git
+  checkout, `lib.sh` failed to load at all, so the "refuses" tests saw a non-zero
+  exit and passed. The "proceeds" test — the control — is what exposed it. Those
+  tests now assert on the refusal *message*, and `lib.sh` says why when it is
+  not in a git checkout instead of aborting silently.
+
+All found the same way as the label and API-version problems: by executing
+against the real environment instead of reasoning about it.
+
+### B5 scripts: three ways a denial check could pass without testing anything
+
+**Phase B5, found while writing the scripts.** The same failure mode as the
+`level4-pgp` test and the unlocked Level 4 test key, in three new places. Each is
+now handled explicitly in `applications/verification/`:
+
+- **A dead probe pod read as "blocked".** If `kubectl exec` failed, the output
+  held no "Connected to", so the connection read as dropped — and every
+  isolation check would have passed. Probes now classify each attempt as
+  ALLOW / BLOCK / REFUSED / NORESOLVE / ERROR, and only the first two are
+  verdicts.
+- **An unresolvable name read as "blocked".** A mistyped Service name never puts
+  a packet in front of the policy, yet looked exactly like a drop. It is now
+  NORESOLVE, a failure.
+- **An empty render read as "no selector leaks".** If `kubectl kustomize` failed,
+  the selector audit received nothing and reported nothing wrong. A failed
+  render is now a failure.
+
+The probe classifier also reads curl's verbose text, which is not a stable
+interface. Each probe pod therefore calibrates itself against two controls whose
+answers are known in advance — kube-dns TCP 53 (must connect) and the API server
+(must be dropped) — and discards that level's results if either reads wrong.
+
+**General rule, now applied throughout B5:** for every check, ask what an
+*absent* or *failed* observation reads as. If the answer is "pass", the check is
+wrong.
+
+### B5 matrix uses `kubectl create token`, not a throwaway pod per SA
+
+**Phase B5.** The PRD (B5 step 10) describes testing the matrix "from a
+throwaway pod running as each SA in turn". `20-privilege-matrix.sh` instead mints
+a 10-minute token per ServiceAccount with `kubectl create token` and logs in to
+Vault from the dev workspace.
+
+The identity Vault validates is the same: it checks the token through the same
+TokenReview call either way, and matches the same namespace and SA name against
+the role. What changes is the network path — the request arrives over the
+MetalLB VIP rather than from inside the namespace. That path is not what the
+matrix is testing; `40-networkpolicy.sh` tests in-cluster reachability
+separately, from real pods. The gain is no dependency on an image, a scheduler,
+or Pod Security admission for the authorization test.
+
+**Not yet executed.** The scripts' `jq` filters have never run: the workstation
+they were written on has no `jq`. The pure-bash logic is covered by
+`applications/verification/test/harness.sh`. Run that and `shellcheck` on the dev
+workspace before the first real B5 run.
+
+### `commonLabels` leaked into NetworkPolicy selectors — every policy would have broken DNS
+
+**Phase B5, found before activation.** All four `base/kustomization.yaml` files
+used `commonLabels` to add `app.kubernetes.io/part-of` and
+`app.kubernetes.io/component`. `commonLabels` does not only add labels to object
+metadata — it writes them into **every selector kustomize knows about**,
+including a NetworkPolicy's egress `to.podSelector`.
+
+Rendered with the NetworkPolicies switched on, Level 3's egress rules came out as:
+
+```yaml
+- to:
+  - podSelector:
+      matchLabels:
+        k8s-app: kube-dns
+        app.kubernetes.io/component: level3-dynamic-db   # injected
+- to:
+  - podSelector:
+      matchLabels:
+        app: postgres
+        app.kubernetes.io/component: level3-dynamic-db   # injected
+```
+
+No DNS pod and no Postgres pod carries those labels, so **DNS would have been
+denied for all four levels and Postgres for Level 3.** Every level would have
+failed, and the policies would have applied without a single error — a textbook
+case of CLAUDE.md rule 6.
+
+**Resolution:** all four switched to kustomize's `labels` transformer with
+`includeSelectors: false` and `includeTemplates: true`. The labels still reach
+object metadata and pod templates, but no selector is touched. Verified by
+rendering all four with the NetworkPolicies enabled and checking every
+`Deployment`, `Service` and `NetworkPolicy` selector: each now contains exactly
+what was written.
+
+**One-time consequence.** This changes each Deployment's `spec.selector`, which
+is **immutable**. Nothing has been deployed yet, so it costs nothing now. If any
+level *had* been deployed with the old selectors, ArgoCD's sync would fail with
+`field is immutable`, and the Deployment would need deleting and recreating. It
+must land before the first B0 deploy.
+
+**Found by rendering, not by reading.** The manifests looked correct on the page.
+The B5 NetworkPolicy script now re-renders and checks selectors before testing,
+and also confirms the two live labels these policies depend on — `k8s-app:
+kube-dns` on the DNS pods and the Postgres label on Stage A's Postgres pod —
+since neither can be checked from this repository.
+
+**Update 2026-10-31:** the Postgres label assumption was wrong. Stage A labels
+the pod `app.kubernetes.io/name=postgres`, not `app: postgres`, so Level 3's egress
+rule would have matched nothing. See the entry above on the rebuilt cluster.
+The selector guard was also narrowed to the two labels *we* inject (`part-of`,
+`component`); as first written it flagged any `app.kubernetes.io/*` key, and
+would have failed the corrected Postgres selector. The workspace's older
+kustomize (v5.0.4) was confirmed to honour `includeSelectors: false`.
+
+### `level4-pgp` is a policy, not a role — the SA/role mismatch test passed for the wrong reason
+
+**Phase B5.** Stage A A6.8 and Stage B B5 both specify:
+
+> *"`level1-app` SA requesting role `level4-pgp` → denied"*
+
+The roles are named `level{1..4}-app` (A6.6). `level4-pgp` is the **policy**
+(A6.5). Requesting a role that doesn't exist is refused with `invalid role
+name`, so the test goes green **without ever reaching the check it exists to
+prove** — that Level 4's role refuses Level 1's ServiceAccount.
+
+**Decision (owner): do not create a `level4-pgp` role; fix the test.** A role by
+that name would have to bind *some* ServiceAccount. Bound to `level4-app`, it is
+a redundant second route to the PGP private key. Bound to anything else, it
+admits the wrong workload. Either way it breaks B5 step 9's
+one-ServiceAccount-one-role rule.
+
+**Resolution:** the B5 scripts test against the real role, `level4-app`, and
+assert on the refusal *reason*. `service account name not authorized` passes;
+`invalid role name` fails the test even though it is a refusal. The scripts run
+the full 5×4 login grid (four level SAs plus `default`, against four roles)
+rather than the single cell the PRD names.
+
+**Knock-on.** Under one-SA-per-role binding, no pod can log in through another
+level's role. So two failure injections describe something that cannot happen:
+
+- **B2 injection 1** — `VAULT_ROLE=level4-pgp` → "login succeeds, read 403"
+- **B4 injection 6** — a role lacking `level4-pgp` → "clean 403"
+
+Both are marked **superseded by the B5 matrix** in the Level 2 and Level 4
+READMEs. The read-level denial they were after is exactly what the matrix's
+twelve denials prove, with each SA using its *own* role.
+
+Same lesson as the unlocked Level 4 test key: **a denial test has to be seen to
+deny for the intended reason.** Explained without jargon in
+`documents/vault-roles-and-policies.md`.
+
+### `level1-app` keeps its Vault role — the two PRDs disagreed
+
+**Phase B5.** A direct contradiction between the PRDs:
+
+- **Stage B B1:** `level1-app` is *"created but never granted a Vault role —
+  demonstrating that it needs none."*
+- **Stage A A6.6:** creates role `level1-app` bound to that ServiceAccount.
+- **Stage B B5:** the matrix expects `level1-app` → `level1/app` to be **allow**.
+
+CLAUDE.md says to stop and ask when a PRD is internally inconsistent, so this
+went to the owner.
+
+**Decision (owner): keep the role**, following A6.6. The B5 matrix row stays as
+the PRD wrote it.
+
+**What it costs.** The role is an **unused credential**. Level 1's application
+never logs in to Vault; ESO does that through its own role. Anyone who can mint
+a `level1-app` token in the namespace (`create serviceaccounts/token`) can log in
+through it. Level 1's Deployment sets `automountServiceAccountToken: false`, so a
+compromised Level 1 *pod* has no token to use — the exposure is a token minted
+outside the pod.
+
+**Production alternative:** remove the role. An identity no workload uses should
+hold no credential. Level 1's README and `serviceaccount.yaml` were updated: both
+previously stated, as B1 does, that the SA had no role.
+
 ### Documentation lives in `documents/`, not `docs/` — a deliberate deviation
 
 **Phase B0.** Both PRDs and CLAUDE.md specify a `docs/` directory throughout:
@@ -364,6 +607,28 @@ that no longer receives fixes, for the component that issues Vault's TLS. That i
 the strongest single argument for doing the upgrade before Stage A goes live
 rather than after.
 
+**Update 2026-10-31 — resolved: the cluster is on Kubernetes 1.36.4.** Checked
+on the cluster itself: API server `v1.36.4`, all three nodes `v1.36.4`,
+container runtime CRI-O `1.36.6`. P2 (≥ 1.32) now passes, and the version pins
+above have been re-pinned for 1.36 — observed cert-manager `v1.21.2`, ESO
+`v2.11.0`, Vault `2.0.4`.
+
+It looks like a **rebuild rather than an in-place upgrade**: the nodes and the
+Stage A namespaces are 38–39 days old (created around 2026-09-22), and an
+in-place kubeadm upgrade keeps the original Node objects. A 1.29 → 1.36 in-place
+path would also need seven sequential minor upgrades. If so, all Stage A state
+on the old cluster — Vault's data and the unseal keys from its `operator init` —
+began again on the new one. Confirm with PE which keys belong to the current
+Vault.
+
+Two consequences found the same day:
+
+- The runtime is **CRI-O, not containerd**. P7's "registry trusted by
+  containerd" check needs re-expressing for CRI-O's registry configuration.
+- The dev workspace's `kubectl` is still **v1.29.15**, seven minor versions from
+  the server; Kubernetes supports ±1. It still talks to the cluster, but its
+  behaviour against 1.36 is unsupported and it should be upgraded.
+
 ### ESO `ClusterSecretStore` uses `v1beta1`, not `v1`
 
 **Phase A8.** PRD step 3 writes `apiVersion: external-secrets.io/v1`. That API
@@ -374,6 +639,24 @@ support) serves `v1beta1`.
 to serve `v1`, switch it — `v1beta1` stays served either way. This is a
 version-compatibility consequence of the 1.29 decision, not a disagreement with
 the PRD.
+
+**Update 2026-10-31 — reversed: back to `v1`, and "either way" was wrong.** The
+cluster now runs ESO `v2.11.0`, and its `ExternalSecret` CRD reads
+`v1(served=true,storage=true) v1beta1(served=false,storage=false)`. `v1beta1` is
+still *listed* but **not served**, so a `v1beta1` manifest is rejected by the API
+server. The `vault-backend` ClusterSecretStore observed on the cluster is already
+`external-secrets.io/v1`, and Stage B's Level 1 `ExternalSecret` has been
+switched back to `v1` to match.
+
+The claim above that "`v1beta1` stays served either way" was an assumption about
+future ESO releases, written down as if it were a fact. Worth keeping as a
+lesson: **check the CRD's served versions on the cluster, not the API's
+reputation** —
+
+```bash
+kubectl get crd externalsecrets.external-secrets.io \
+  -o jsonpath='{range .spec.versions[*]}{.name} served={.served}{"\n"}{end}'
+```
 
 ### The CA is read from the Secret, not copied into a ConfigMap
 

@@ -94,7 +94,7 @@ curl -s localhost:8080/key-status | jq                                      # ex
 | Test | Expected |
 |---|---|
 | Wrong passphrase | Clear failure at import. No garbage plaintext, passphrase never logged or returned |
-| Role lacking `level4-pgp` | Clean 403 with a clear error |
+| ~~Role lacking `level4-pgp`~~ | **Superseded by the Phase B5 matrix.** Level 4's SA can only log in through `level4-app`, which carries `level4-pgp`; no other role admits it. The denial this was after is the matrix's `level4/pgp` column — three of the twelve denials |
 | Truncated `.gpg` fixture | Decryption error and **no partial plaintext written or printed** |
 | Pod restart | Whole flow re-runs; tmpfs empty on the new pod |
 

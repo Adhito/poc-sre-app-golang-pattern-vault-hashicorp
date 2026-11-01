@@ -10,6 +10,16 @@ resources:
   - service.yaml
   # - networkpolicy.yaml   # added in Phase B5, where its gate requires testing
 
-commonLabels:
-  app.kubernetes.io/part-of: vault-poc-applications
-  app.kubernetes.io/component: level1-env-secret
+# `labels`, not `commonLabels`. commonLabels also writes into every selector it
+# can find — including a NetworkPolicy's egress `to.podSelector`, where it turns
+# "allow DNS to kube-dns pods" into "allow DNS to kube-dns pods that are also
+# labelled as this level", which matches nothing. DNS and Postgres egress would
+# be silently denied the moment the NetworkPolicy is activated in B5.
+# includeSelectors: false keeps these as metadata only. See
+# documents/troubleshooting.md.
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: vault-poc-applications
+      app.kubernetes.io/component: level1-env-secret
+    includeSelectors: false
+    includeTemplates: true
